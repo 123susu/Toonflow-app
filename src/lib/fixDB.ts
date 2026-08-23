@@ -68,7 +68,7 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("o_assets", "audioBindState", "integer");
   await addColumn("o_modelPrompt", "fileName", "string");
   await addColumn("o_modelPrompt", "path", "string");
-  const vendorDataSelect = await u.db("o_vendorConfig").whereIn("id", ["deepseek", "atlascloud"]).select("*");
+  const vendorDataSelect = await u.db("o_vendorConfig").whereIn("id", ["deepseek", "atlascloud", "kimi", "bailian"]).select("*");
   if (!vendorDataSelect.find((i) => i.id == "deepseek")) {
     await u.db("o_vendorConfig").insert({
       id: "deepseek",
@@ -80,6 +80,22 @@ export default async (knex: Knex): Promise<void> => {
   if (!vendorDataSelect.find((i) => i.id == "atlascloud")) {
     await u.db("o_vendorConfig").insert({
       id: "atlascloud",
+      inputValues: "{}",
+      models: "[]",
+      enable: 0,
+    });
+  }
+  if (!vendorDataSelect.find((i) => i.id == "kimi")) {
+    await u.db("o_vendorConfig").insert({
+      id: "kimi",
+      inputValues: "{}",
+      models: "[]",
+      enable: 0,
+    });
+  }
+  if (!vendorDataSelect.find((i) => i.id == "bailian")) {
+    await u.db("o_vendorConfig").insert({
+      id: "bailian",
       inputValues: "{}",
       models: "[]",
       enable: 0,
@@ -183,7 +199,7 @@ export default async (knex: Knex): Promise<void> => {
     u.vendor.writeCode("volcengine", vendorData["volcengine.ts"]);
   }
   const minimaxVer = await u.vendor.getVendor("minimax").version;
-  if (Number(minimaxVer) < 2.1) {
+  if (Number(minimaxVer) < 2.2) {
     u.vendor.writeCode("minimax", vendorData["minimax.ts"]);
   }
   const toonflowVer = await u.vendor.getVendor("toonflow").version;

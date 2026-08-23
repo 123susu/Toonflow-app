@@ -134,7 +134,7 @@ declare const exports: {
 
 const vendor: VendorConfig = {
   id: "minimax",
-  version: "2.1",
+  version: "2.2",
   author: "Toonflow",
   name: "MiniMax(海螺AI)",
   description: "MiniMax官方接口适配，支持M系列推理文本模型、文生图/图生图、视频生成（文生视频、图生视频、首尾帧生成）能力 \n [前往平台](https://minimaxi.com/)",
@@ -156,6 +156,15 @@ const vendor: VendorConfig = {
     { name: "海螺图像V1", modelName: "image-01", type: "image", mode: ["text", "singleImage"] },
     { name: "海螺图像V1 Live版", modelName: "image-01-live", type: "image", mode: ["text", "singleImage"], associationSkills: "支持自定义画风" },
     // 视频模型
+    {
+      name: "MiniMax H3",
+      modelName: "MiniMax-H3",
+      type: "video",
+      mode: ["text", "singleImage", "startEndRequired", ["imageReference:9", "videoReference:3", "audioReference:3"]],
+      associationSkills: "文生视频、首尾帧、多模态全能参考",
+      audio: false,
+      durationResolutionMap: [{ duration: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolution: ["768P", "2K"] }],
+    },
     {
       name: "海螺2.3",
       modelName: "MiniMax-Hailuo-2.3",
@@ -280,8 +289,129 @@ const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<str
   return imgBase64.startsWith("data:") ? imgBase64 : `data:image/png;base64,${imgBase64}`;
 };
 
+const normalizeH3Media = (value: string, type: "image" | "video" | "audio"): string => {
+  if (value.startsWith("data:") || /^https?:\/\//i.test(value)) return value;
+  const mime = type === "image" ? "image/png" : type === "video" ? "video/mp4" : "audio/mpeg";
+  return `data:${mime};base64,${value}`;
+};
+
+const h3ErrorMessage = (data: any, fallback: string): string =>
+  data?.error?.message || data?.base_resp?.status_msg || data?.message || fallback;
+
+const requestH3Video = async (config: VideoConfig, model: VideoModel): Promise<string> => {
+  const baseUrl = getBaseUrl();
+  const headers = getHeaders();
+  const refs = config.referenceList || [];
+  const modeList = Array.isArray(config.mode) ? config.mode : [config.mode];
+  const isReferenceMode = modeList.some((mode: any) => typeof mode === "string" && /^(image|video|audio)Reference:\d+$/.test(mode));
+  const isStartEndMode = modeList.includes("startEndRequired");
+  const isSingleImageMode = modeList.includes("singleImage");
+  const content: any[] = [{ type: "text", text: config.prompt }];
+
+  if (isReferenceMode) {
+    const referenceContent: any[] = [];
+    const videoRefs = refs.filter((item) => item.type === "video").slice(0, 3);
+    const audioRefs = refs.filter((item) => item.type === "audio").slice(0, 3);
+    // 混合输入最多 12 个文件；优先为视频和音频保留名额，再填充参考图。
+    const imageRefs = refs.filter((item) => item.type === "image").slice(0, Math.min(9, 12 - videoRefs.length - audioRefs.length));
+    for (const ref of imageRefs) {
+      referenceContent.push({
+        type: "image_url",
+        image_url: { url: normalizeH3Media(ref.base64, "image") },
+        role: "reference_image",
+      });
+    }
+    for (const ref of videoRefs) {
+      referenceContent.push({
+        type: "video_url",
+        video_url: { url: normalizeH3Media(ref.base64, "video") },
+        role: "reference_video",
+      });
+    }
+    for (const ref of audioRefs) {
+      referenceContent.push({
+        type: "audio_url",
+        audio_url: { url: normalizeH3Media(ref.base64, "audio") },
+        role: "reference_audio",
+      });
+    }
+    content.push(...referenceContent);
+  } else if (isStartEndMode || isSingleImageMode) {
+    const imageRefs = refs.filter((item) => item.type === "image");
+    if (isStartEndMode && imageRefs.length < 2) throw new Error("MiniMax H3 首尾帧模式需要两张图片");
+    if (isSingleImageMode && imageRefs.length < 1) throw new Error("MiniMax H3 单图模式需要一张图片");
+    content.push({
+      type: "image_url",
+      image_url: { url: normalizeH3Media(imageRefs[0].base64, "image") },
+      role: "first_frame",
+    });
+    if (isStartEndMode) {
+      content.push({
+        type: "image_url",
+        image_url: { url: normalizeH3Media(imageRefs[1].base64, "image") },
+        role: "last_frame",
+      });
+    }
+  }
+
+  const hasFrame = content.some((item) => item.role === "first_frame" || item.role === "last_frame");
+  const reqBody = {
+    model: model.modelName,
+    content,
+    duration: Math.max(4, Math.min(15, Math.round(config.duration))),
+    resolution: String(config.resolution).toUpperCase() === "2K" ? "2K" : "768P",
+    ratio: hasFrame ? "adaptive" : config.aspectRatio,
+    aigc_watermark: false,
+  };
+
+  logger(
+    `[MiniMax H3] 提交任务: mode=${isReferenceMode ? "reference" : hasFrame ? "frame" : "text"}, duration=${reqBody.duration}, resolution=${reqBody.resolution}`,
+  );
+  let submitData: any;
+  try {
+    const response = await axios.post(`${baseUrl}/v2/video_generation`, reqBody, { headers });
+    submitData = response.data;
+  } catch (error: any) {
+    throw new Error(`MiniMax H3 任务提交失败：${h3ErrorMessage(error?.response?.data, error?.message || "请求失败")}`);
+  }
+  const taskId = submitData?.task_id;
+  if (!taskId) throw new Error(`MiniMax H3 任务提交失败：${h3ErrorMessage(submitData, "未返回任务ID")}`);
+  logger(`[MiniMax H3] 任务已提交: ${taskId}`);
+
+  const pollResult = await pollTask(
+    async () => {
+      try {
+        const response = await axios.get(`${baseUrl}/v2/query/video_generation/${taskId}`, { headers });
+        const task = response.data?.task;
+        const status = task?.status;
+        if (status === "succeeded") {
+          const url = task?.content?.url;
+          return url ? { completed: true, data: url } : { completed: true, error: "任务成功但未返回视频地址" };
+        }
+        if (status === "failed" || status === "cancelled") {
+          return { completed: true, error: h3ErrorMessage(task, `视频生成未成功：${status}`) };
+        }
+        logger(`[MiniMax H3] 任务状态: ${status || "unknown"}`);
+        return { completed: false };
+      } catch (error: any) {
+        return {
+          completed: true,
+          error: `查询任务失败：${h3ErrorMessage(error?.response?.data, error?.message || "请求失败")}`,
+        };
+      }
+    },
+    10000,
+    1800000,
+  );
+
+  if (pollResult.error) throw new Error(`MiniMax H3 视频生成失败：${pollResult.error}`);
+  if (!pollResult.data) throw new Error("MiniMax H3 视频生成失败：未返回视频地址");
+  return pollResult.data;
+};
+
 const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<string> => {
   if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
+  if (model.modelName === "MiniMax-H3") return await requestH3Video(config, model);
   const baseUrl = getBaseUrl();
   const headers = getHeaders();
 

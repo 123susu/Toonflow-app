@@ -183,6 +183,16 @@ class AiText {
     this.think = think;
     this.thinkLevel = thinkLevel;
   }
+  private async resolveMaxRetries() {
+    const modelName = await resolveModelName(this.AiType);
+
+    // Kimi may temporarily return engine_overloaded_error (HTTP 429). The AI SDK
+    // defaults to only two retries (three attempts in total), which gives the
+    // service just 6 seconds to recover. Five retries use the SDK's Retry-After
+    // aware exponential backoff and give transient overloads about one minute to
+    // clear, while still allowing abortSignal to cancel the wait.
+    return modelName.startsWith("kimi:") ? 5 : 2;
+  }
   private async resolveModel(middleware?: any | any[]) {
     const switchAiDevTool = await u.db("o_setting").where("key", "switchAiDevTool").first();
     const modelName = await resolveModelName(this.AiType);
@@ -201,6 +211,7 @@ class AiText {
       ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
       ...input,
       model: await this.resolveModel(),
+      maxRetries: input.maxRetries ?? (await this.resolveMaxRetries()),
       ...(config?.temperature && { temperature: config.temperature }),
       ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
     } as Parameters<typeof generateText>[0]);
@@ -212,6 +223,7 @@ class AiText {
       ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
       ...input,
       model: await this.resolveModel(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" })),
+      maxRetries: input.maxRetries ?? (await this.resolveMaxRetries()),
       ...(config?.temperature && { temperature: config.temperature }),
       ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
     } as Parameters<typeof streamText>[0]);

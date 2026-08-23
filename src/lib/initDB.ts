@@ -583,6 +583,18 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
             enable: 0,
           },
           {
+            id: "kimi",
+            inputValues: "{}",
+            models: "[]",
+            enable: 0,
+          },
+          {
+            id: "bailian",
+            inputValues: "{}",
+            models: "[]",
+            enable: 0,
+          },
+          {
             id: "volcengine",
             inputValues: "{}",
             models: "[]",
